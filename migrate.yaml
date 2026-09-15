@@ -1,0 +1,31 @@
+data:
+  - namespace: "task-api-a"
+    deploymentconfigs:
+      - name: "pikachu-dc"
+        containers:
+          - name: "pikachu"
+            secrets:
+              - "pikachu-secret"
+            configmap:
+              - "config-pikachu"
+            env:
+              - "APP_MODE"
+    deployments:
+      - name: "gengar-api"
+        containers:
+          - name: "gengar"
+            secrets:
+              - "gengar-secret"
+            configmap:
+              - "config-gengar"
+            env:
+              - "APP_MODE"
+      - name: "gengar1-api"
+        containers:
+          - name: "gengar1"
+            secrets:
+              - "gengar1-secret"
+            configmap:
+              - "config1-gengar"
+            env:
+              - "APP_MODE"
