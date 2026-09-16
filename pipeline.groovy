@@ -42,8 +42,8 @@ pipeline {
         stage('Read Source Resources') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp, config.ocpcred) {
-                        openshift.verbose(false)
+                    withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
+    openshift.withCluster(config.ocp, OCP_TOKEN) {
                         requests.eachWithIndex { item, index ->
                             openshift.withProject(item.namespace) {
                                 // Never echo the result: source manifests can contain secrets.
@@ -53,6 +53,7 @@ pipeline {
                             }
                         }
                     }
+                }
                     sh 'python3 scripts/migrate.py prepare'
                     plan = readJSON(file: '.migration-work/plan.json', returnPojo: true)
                 }
@@ -61,7 +62,8 @@ pipeline {
         stage('Preflight New Resources') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp, config.ocpcred) {
+                    withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
+    openshift.withCluster(config.ocp, OCP_TOKEN) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 // Create-only clones: an existing name must never be overwritten.
@@ -95,7 +97,8 @@ pipeline {
         stage('Apply Vault Resources') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp, config.ocpcred) {
+                    withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
+    openshift.withCluster(config.ocp, OCP_TOKEN) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 // File arguments avoid embedding SecretID values in Pipeline step arguments.
@@ -111,7 +114,8 @@ pipeline {
         stage('Verify Synchronized Data') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp, config.ocpcred) {
+                    withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
+    openshift.withCluster(config.ocp, OCP_TOKEN) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 timeout(time: params.SYNC_TIMEOUT_SECONDS.toInteger(), unit: 'SECONDS') {
@@ -133,7 +137,8 @@ pipeline {
         stage('Create New Deployments') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp, config.ocpcred) {
+                    withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
+    openshift.withCluster(config.ocp, OCP_TOKEN) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 openshift.raw('create', '-f', item.deploymentFile, '-o=name')
