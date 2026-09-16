@@ -42,7 +42,7 @@ pipeline {
         stage('Read Source Resources') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp) {
+                    openshift.withCluster(config.ocp, config.ocpcred) {
                         openshift.verbose(false)
                         requests.eachWithIndex { item, index ->
                             openshift.withProject(item.namespace) {
@@ -61,7 +61,7 @@ pipeline {
         stage('Preflight New Resources') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp) {
+                    openshift.withCluster(config.ocp, config.ocpcred) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 // Create-only clones: an existing name must never be overwritten.
@@ -95,7 +95,7 @@ pipeline {
         stage('Apply Vault Resources') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp) {
+                    openshift.withCluster(config.ocp, config.ocpcred) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 // File arguments avoid embedding SecretID values in Pipeline step arguments.
@@ -111,7 +111,7 @@ pipeline {
         stage('Verify Synchronized Data') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp) {
+                    openshift.withCluster(config.ocp, config.ocpcred) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 timeout(time: params.SYNC_TIMEOUT_SECONDS.toInteger(), unit: 'SECONDS') {
@@ -133,7 +133,7 @@ pipeline {
         stage('Create New Deployments') {
             steps {
                 script {
-                    openshift.withCluster(config.ocp) {
+                    openshift.withCluster(config.ocp, config.ocpcred) {
                         plan.each { item ->
                             openshift.withProject(item.namespace) {
                                 openshift.raw('create', '-f', item.deploymentFile, '-o=name')
