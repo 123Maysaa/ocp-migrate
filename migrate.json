@@ -1,7 +1,7 @@
 {
   "data": [
     {
-      "namespace": "task-api-a",
+      "namespace": "bebas-openshift-vault",
       "deploymentconfigs": [
         {
           "name": "pikachu-dc",
@@ -16,21 +16,6 @@
               ],
               "env": [
                 "APP_MODE"
-              ]
-            }
-          ]
-        },
-        {
-          "name": "pikachu-postgres-dc",
-          "containers": [
-            {
-              "name": "postgres",
-              "secrets": [
-                "pikachu-secret"
-              ],
-              "configmap": [],
-              "env": [
-                "PGDATA"
               ]
             }
           ]
@@ -50,21 +35,6 @@
               ],
               "env": [
                 "APP_MODE"
-              ]
-            }
-          ]
-        },
-        {
-          "name": "gengar-postgres",
-          "containers": [
-            {
-              "name": "postgres",
-              "secrets": [
-                "gengar-secret"
-              ],
-              "configmap": [],
-              "env": [
-                "PGDATA"
               ]
             }
           ]
