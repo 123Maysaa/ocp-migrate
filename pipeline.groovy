@@ -43,7 +43,8 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN) {
+                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
+                            openshift.verbose(false)
                             requests.eachWithIndex { item, index ->
                                 openshift.withProject(item.namespace) {
                                     // Never echo the result: source manifests can contain secrets.
@@ -56,14 +57,14 @@ pipeline {
                     }
                     sh 'python3 scripts/migrate.py prepare'
                     plan = readJSON(file: '.migration-work/plan.json', returnPojo: true)
-                } // <-- Diberikan penutup script {} yang tadinya terhilang di stage ini
+                }
             }
         }
         stage('Preflight New Resources') {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN) {
+                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
                                     // Create-only clones: an existing name must never be overwritten.
@@ -99,7 +100,7 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN) {
+                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
                                     // File arguments avoid embedding SecretID values in Pipeline step arguments.
@@ -117,7 +118,7 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN) {
+                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
                                     timeout(time: params.SYNC_TIMEOUT_SECONDS.toInteger(), unit: 'SECONDS') {
@@ -141,7 +142,7 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN) {
+                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
                                     openshift.raw('create', '-f', item.deploymentFile, '-o=name')
