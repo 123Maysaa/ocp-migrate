@@ -1,5 +1,5 @@
 data:
-  - namespace: "task-api-a"
+  - namespace: "bebas-openshift-vault"
     deploymentconfigs:
       - name: "pikachu-dc"
         containers:
@@ -18,14 +18,5 @@ data:
               - "gengar-secret"
             configmap:
               - "config-gengar"
-            env:
-              - "APP_MODE"
-      - name: "gengar1-api"
-        containers:
-          - name: "gengar1"
-            secrets:
-              - "gengar1-secret"
-            configmap:
-              - "config1-gengar"
             env:
               - "APP_MODE"
