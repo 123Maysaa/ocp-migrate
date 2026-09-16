@@ -43,12 +43,11 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
+                        openshift.withCluster(config.ocp, OCP_TOKEN) {
                             openshift.verbose(false)
                             requests.eachWithIndex { item, index ->
                                 openshift.withProject(item.namespace) {
-                                    // Never echo the result: source manifests can contain secrets.
-                                    def result = openshift.raw('get', item.kind, item.name, '-o=json')
+                                    def result = openshift.raw('get', item.kind, item.name, '-o=json', '--insecure-skip-tls-verify=true')
                                     writeFile(file: ".migration-work/source-${index}.json", text: result.out)
                                     result = null
                                 }
@@ -64,17 +63,16 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
+                        openshift.withCluster(config.ocp, OCP_TOKEN) {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
-                                    // Create-only clones: an existing name must never be overwritten.
                                     def existing = openshift.raw('get', 'deployment', item.target,
-                                        '--ignore-not-found', '-o=name').out.trim()
+                                        '--ignore-not-found', '-o=name', '--insecure-skip-tls-verify=true').out.trim()
                                     if (existing) { error("Deployment tujuan sudah ada: ${item.namespace}/${item.target}") }
-                                    openshift.raw('create', '--dry-run=server', '-f', item.deploymentFile, '-o=name')
-                                    openshift.raw('apply', '--dry-run=server', '-f', item.connectionFile, '-o=name')
-                                    openshift.raw('apply', '--dry-run=server', '-f', item.staticFile, '-o=name')
-                                    openshift.raw('get', 'vaultauths.secrets.hashicorp.com', '-o=name')
+                                    openshift.raw('create', '--dry-run=server', '-f', item.deploymentFile, '-o=name', '--insecure-skip-tls-verify=true')
+                                    openshift.raw('apply', '--dry-run=server', '-f', item.connectionFile, '-o=name', '--insecure-skip-tls-verify=true')
+                                    openshift.raw('apply', '--dry-run=server', '-f', item.staticFile, '-o=name', '--insecure-skip-tls-verify=true')
+                                    openshift.raw('get', 'vaultauths.secrets.hashicorp.com', '-o=name', '--insecure-skip-tls-verify=true')
                                 }
                             }
                         }
@@ -100,12 +98,11 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
+                        openshift.withCluster(config.ocp, OCP_TOKEN) {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
-                                    // File arguments avoid embedding SecretID values in Pipeline step arguments.
                                     [item.connectionFile, item.holderFile, item.authFile, item.staticFile].each { path ->
-                                        openshift.raw('apply', '-f', path, '-o=name')
+                                        openshift.raw('apply', '-f', path, '-o=name', '--insecure-skip-tls-verify=true')
                                     }
                                 }
                             }
@@ -118,13 +115,13 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
+                        openshift.withCluster(config.ocp, OCP_TOKEN) {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
                                     timeout(time: params.SYNC_TIMEOUT_SECONDS.toInteger(), unit: 'SECONDS') {
                                         waitUntil(initialRecurrencePeriod: 5000, quiet: true) {
                                             def result = openshift.raw('get', 'secret', item.destination,
-                                                '--ignore-not-found', '-o=json')
+                                                '--ignore-not-found', '-o=json', '--insecure-skip-tls-verify=true')
                                             writeFile(file: item.actualFile, text: result.out.trim() ?: '{}')
                                             result = null
                                             return sh(script: "python3 scripts/migrate.py verify ${item.index}",
@@ -142,10 +139,10 @@ pipeline {
             steps {
                 script {
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        openshift.withCluster(config.ocp, OCP_TOKEN, '--insecure-skip-tls-verify=true') {
+                        openshift.withCluster(config.ocp, OCP_TOKEN) {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
-                                    openshift.raw('create', '-f', item.deploymentFile, '-o=name')
+                                    openshift.raw('create', '-f', item.deploymentFile, '-o=name', '--insecure-skip-tls-verify=true')
                                     echo "Dibuat ${item.namespace}/${item.target}, replica=1; pemeriksaan aplikasi manual."
                                 }
                             }
@@ -157,7 +154,6 @@ pipeline {
     }
     post {
         always {
-            // No stash/archive of source values, payloads, or generated credentials.
             dir('.migration-work') { deleteDir() }
         }
     }
