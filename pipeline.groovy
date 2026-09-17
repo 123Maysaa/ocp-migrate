@@ -13,7 +13,7 @@ pipeline {
         string(name: 'ENV_FILE', defaultValue: 'env.yaml', description: 'Konfigurasi Jenkins/OCP/Vault')
         string(name: 'SYNC_TIMEOUT_SECONDS', defaultValue: '180', description: 'Batas tunggu sinkronisasi VSO')
         
-        // Parameter Choice Standard (Langsung muncul di Dropdown GUI)
+        // Parameter Choice Standard
         choice(
             name: 'TARGET_NAMESPACE', 
             choices: ['bebas-openshift-vault', 'task-api-a'], 
@@ -42,64 +42,69 @@ pipeline {
 
                     config = readYaml(file: params.ENV_FILE)
 
-                    // Generate migrate.yaml secara presisi tanpa block kosong
-                    sh """#!/bin/bash
-                        set -eu
-                        
-                        RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
-                        CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
+                    // Menggunakan credentials OCP agar perintah 'oc' di Bash bisa membaca cluster
+                    withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
+                        sh """#!/bin/bash
+                            set -eu
+                            
+                            # Login singkat CLI untuk sesi workspace
+                            oc login ${config.ocp} --token="\$OCP_TOKEN" --insecure-skip-tls-verify=true >/dev/null
 
-                        # Detect ketersediaan DC & Deploy
-                        HAS_DC=""
-                        HAS_DEPLOY=""
-                        for NAME in \$CLEAN_WORKLOADS; do
-                            if [ -n "\$NAME" ]; then
-                                if oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q dc; then
-                                    HAS_DC="true"
-                                fi
-                                if oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q deployment; then
-                                    HAS_DEPLOY="true"
-                                fi
-                            fi
-                        done
+                            RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
+                            CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
 
-                        cat <<EOF > migrate.yaml
+                            # Detect ketersediaan DC & Deploy secara akurat
+                            HAS_DC=""
+                            HAS_DEPLOY=""
+                            for NAME in \$CLEAN_WORKLOADS; do
+                                if [ -n "\$NAME" ]; then
+                                    if oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q dc; then
+                                        HAS_DC="true"
+                                    fi
+                                    if oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q deployment; then
+                                        HAS_DEPLOY="true"
+                                    fi
+                                fi
+                            done
+
+                            cat <<EOF > migrate.yaml
 data:
   - namespace: "${params.TARGET_NAMESPACE}"
 EOF
 
-                        # Write DeploymentConfigs jika ada
-                        if [ -n "\$HAS_DC" ]; then
-                            echo "    deploymentconfigs:" >> migrate.yaml
-                            for NAME in \$CLEAN_WORKLOADS; do
-                                if oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q dc; then
-                                    echo "      - name: \"\$NAME\"" >> migrate.yaml
-                                    echo "        containers:" >> migrate.yaml
-                                    CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
-                                    for c in \$CONTAINERS; do
-                                        echo "          - name: \"\$c\"" >> migrate.yaml
-                                        echo "            env: [\"APP_MODE\"]" >> migrate.yaml
-                                    done
-                                fi
-                            done
-                        fi
+                            # Write DeploymentConfigs jika ada
+                            if [ -n "\$HAS_DC" ]; then
+                                echo "    deploymentconfigs:" >> migrate.yaml
+                                for NAME in \$CLEAN_WORKLOADS; do
+                                    if oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q dc; then
+                                        echo "      - name: \"\$NAME\"" >> migrate.yaml
+                                        echo "        containers:" >> migrate.yaml
+                                        CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
+                                        for c in \$CONTAINERS; do
+                                            echo "          - name: \"\$c\"" >> migrate.yaml
+                                            echo "            env: [\"APP_MODE\"]" >> migrate.yaml
+                                        done
+                                    fi
+                                done
+                            fi
 
-                        # Write Deployments jika ada
-                        if [ -n "\$HAS_DEPLOY" ]; then
-                            echo "    deployments:" >> migrate.yaml
-                            for NAME in \$CLEAN_WORKLOADS; do
-                                if oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q deployment; then
-                                    echo "      - name: \"\$NAME\"" >> migrate.yaml
-                                    echo "        containers:" >> migrate.yaml
-                                    CONTAINERS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
-                                    for c in \$CONTAINERS; do
-                                        echo "          - name: \"\$c\"" >> migrate.yaml
-                                        echo "            env: [\"APP_MODE\"]" >> migrate.yaml
-                                    done
-                                fi
-                            done
-                        fi
-                    """
+                            # Write Deployments jika ada
+                            if [ -n "\$HAS_DEPLOY" ]; then
+                                echo "    deployments:" >> migrate.yaml
+                                for NAME in \$CLEAN_WORKLOADS; do
+                                    if oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q deployment; then
+                                        echo "      - name: \"\$NAME\"" >> migrate.yaml
+                                        echo "        containers:" >> migrate.yaml
+                                        CONTAINERS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
+                                        for c in \$CONTAINERS; do
+                                            echo "          - name: \"\$c\"" >> migrate.yaml
+                                            echo "            env: [\"APP_MODE\"]" >> migrate.yaml
+                                        done
+                                    fi
+                                done
+                            fi
+                        """
+                    }
 
                     writeJSON(file: '.migration-work/config.json', json: config)
                     writeJSON(file: '.migration-work/input.json', json: readYaml(file: 'migrate.yaml'))
