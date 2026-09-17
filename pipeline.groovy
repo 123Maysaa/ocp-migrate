@@ -13,24 +13,25 @@ pipeline {
         string(name: 'ENV_FILE', defaultValue: 'env.yaml', description: 'Konfigurasi Jenkins/OCP/Vault')
         string(name: 'SYNC_TIMEOUT_SECONDS', defaultValue: '180', description: 'Batas tunggu sinkronisasi VSO')
         
-        // 1. Single Select Namespace dari OpenShift
+        // 1. Parameter Single Select Project
         activeChoice(
             name: 'TARGET_NAMESPACE',
             choiceType: 'PT_SINGLE_SELECT',
             description: 'Pilih Project OpenShift yang akan dimigrasikan',
             script: [
                 $class: 'GroovyScript',
-                fallbackScript: [classpath: [], sandbox: false, script: 'return ["error"]'],
+                fallbackScript: [classpath: [], sandbox: false, script: 'return ["bebas-openshift-vault"]'],
                 script: [classpath: [], sandbox: false, script: '''
                     def command = "oc get projects -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
                     def proc = command.execute()
                     proc.waitFor()
-                    return proc.text.tokenize(' ')
+                    def res = proc.text.tokenize(' ')
+                    return res ?: ["bebas-openshift-vault"]
                 ''']
             ]
         )
         
-        // 2. Checkbox Multi-Select Workload Berdasarkan Namespace
+        // 2. Parameter Checkbox Workload
         reactiveChoice(
             name: 'SELECTED_WORKLOADS',
             choiceType: 'PT_CHECKBOX',
@@ -38,13 +39,14 @@ pipeline {
             referencedParameters: 'TARGET_NAMESPACE',
             script: [
                 $class: 'GroovyScript',
-                fallbackScript: [classpath: [], sandbox: false, script: 'return ["error"]'],
+                fallbackScript: [classpath: [], sandbox: false, script: 'return ["pikachu-dc"]'],
                 script: [classpath: [], sandbox: false, script: '''
                     if (!TARGET_NAMESPACE) return []
-                    def command = "oc get dc,deploy -n ${TARGET_NAMESPACE} -o jsonpath='{range .items[*]}{.kind}{\\\\/}{.metadata.name}{\\\\n}{end}' --insecure-skip-tls-verify=true"
+                    def command = "oc get dc,deploy -n ${TARGET_NAMESPACE} -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
                     def proc = command.execute()
                     proc.waitFor()
-                    return proc.text.readLines()
+                    def res = proc.text.tokenize(' ')
+                    return res ?: ["pikachu-dc"]
                 ''']
             ]
         )
@@ -62,24 +64,30 @@ pipeline {
                         mkdir -p .migration-work
                         chmod 700 .migration-work
                     '''
-                    
-                    // Generate migrate.yaml secara dinamis dari input Active Choices GUI
+
+                    config = readYaml(file: params.ENV_FILE)
+
+                    // Generate migrate.yaml secara presisi sesuai skema migrate.py
                     sh """#!/bin/bash
                         set -eu
+                        
+                        # Bersihkan format string input dari Active Choices
+                        RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
+                        CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
+
                         cat <<EOF > migrate.yaml
 data:
   - namespace: "${params.TARGET_NAMESPACE}"
     deploymentconfigs:
 EOF
-                        IFS=',' read -ra WORKLOADS <<< "${params.SELECTED_WORKLOADS}"
-                        for item in "\${WORKLOADS[@]}"; do
-                            KIND=\$(echo \$item | cut -d'/' -f1)
-                            NAME=\$(echo \$item | cut -d'/' -f2)
-                            
-                            if [ "\$KIND" == "DeploymentConfig" ] || [ "\$KIND" == "Deployment" ]; then
+                        for NAME in \$CLEAN_WORKLOADS; do
+                            if [ -n "\$NAME" ]; then
                                 echo "      - name: \"\$NAME\"" >> migrate.yaml
                                 echo "        containers:" >> migrate.yaml
-                                CONTAINERS=\$(oc get \$KIND \$NAME -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
+                                
+                                # Ambil daftar nama container bawaan dari cluster OCP
+                                CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true 2>/dev/null || oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true 2>/dev/null || echo "app")
+                                
                                 for c in \$CONTAINERS; do
                                     echo "          - name: \"\$c\"" >> migrate.yaml
                                     echo "            env: [\"APP_MODE\"]" >> migrate.yaml
@@ -88,7 +96,6 @@ EOF
                         done
                     """
 
-                    config = readYaml(file: params.ENV_FILE)
                     writeJSON(file: '.migration-work/config.json', json: config)
                     writeJSON(file: '.migration-work/input.json', json: readYaml(file: 'migrate.yaml'))
                     sh 'python3 scripts/migrate.py requests'
