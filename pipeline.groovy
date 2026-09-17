@@ -42,11 +42,10 @@ pipeline {
 
                     config = readYaml(file: params.ENV_FILE)
 
-                    // Generate migrate.yaml secara presisi sesuai skema migrate.py
+                    // Generate migrate.yaml secara presisi memisahkan DC dan Deployment
                     sh """#!/bin/bash
                         set -eu
                         
-                        # Cleansing format string input pilihan workload
                         RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
                         CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
 
@@ -55,18 +54,36 @@ data:
   - namespace: "${params.TARGET_NAMESPACE}"
     deploymentconfigs:
 EOF
+                        # 1. Loop khusus DeploymentConfig (DC)
                         for NAME in \$CLEAN_WORKLOADS; do
                             if [ -n "\$NAME" ]; then
-                                echo "      - name: \"\$NAME\"" >> migrate.yaml
-                                echo "        containers:" >> migrate.yaml
-                                
-                                # Ambil nama container dari cluster OCP
-                                CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true 2>/dev/null || oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true 2>/dev/null || echo "app")
-                                
-                                for c in \$CONTAINERS; do
-                                    echo "          - name: \"\$c\"" >> migrate.yaml
-                                    echo "            env: [\"APP_MODE\"]" >> migrate.yaml
-                                done
+                                IS_DC=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null || true)
+                                if [ -n "\$IS_DC" ]; then
+                                    echo "      - name: \"\$NAME\"" >> migrate.yaml
+                                    echo "        containers:" >> migrate.yaml
+                                    CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
+                                    for c in \$CONTAINERS; do
+                                        echo "          - name: \"\$c\"" >> migrate.yaml
+                                        echo "            env: [\"APP_MODE\"]" >> migrate.yaml
+                                    done
+                                fi
+                            fi
+                        done
+
+                        echo "    deployments:" >> migrate.yaml
+                        # 2. Loop khusus Deployment Native
+                        for NAME in \$CLEAN_WORKLOADS; do
+                            if [ -n "\$NAME" ]; then
+                                IS_DEPLOY=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null || true)
+                                if [ -n "\$IS_DEPLOY" ]; then
+                                    echo "      - name: \"\$NAME\"" >> migrate.yaml
+                                    echo "        containers:" >> migrate.yaml
+                                    CONTAINERS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
+                                    for c in \$CONTAINERS; do
+                                        echo "          - name: \"\$c\"" >> migrate.yaml
+                                        echo "            env: [\"APP_MODE\"]" >> migrate.yaml
+                                    done
+                                fi
                             fi
                         done
                     """
