@@ -42,23 +42,37 @@ pipeline {
 
                     config = readYaml(file: params.ENV_FILE)
 
-                    // Generate migrate.yaml secara presisi memisahkan DC dan Deployment
+                    // Generate migrate.yaml secara presisi tanpa block kosong
                     sh """#!/bin/bash
                         set -eu
                         
                         RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
                         CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
 
+                        # Detect ketersediaan DC & Deploy
+                        HAS_DC=""
+                        HAS_DEPLOY=""
+                        for NAME in \$CLEAN_WORKLOADS; do
+                            if [ -n "\$NAME" ]; then
+                                if oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q dc; then
+                                    HAS_DC="true"
+                                fi
+                                if oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q deployment; then
+                                    HAS_DEPLOY="true"
+                                fi
+                            fi
+                        done
+
                         cat <<EOF > migrate.yaml
 data:
   - namespace: "${params.TARGET_NAMESPACE}"
-    deploymentconfigs:
 EOF
-                        # 1. Loop khusus DeploymentConfig (DC)
-                        for NAME in \$CLEAN_WORKLOADS; do
-                            if [ -n "\$NAME" ]; then
-                                IS_DC=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null || true)
-                                if [ -n "\$IS_DC" ]; then
+
+                        # Write DeploymentConfigs jika ada
+                        if [ -n "\$HAS_DC" ]; then
+                            echo "    deploymentconfigs:" >> migrate.yaml
+                            for NAME in \$CLEAN_WORKLOADS; do
+                                if oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q dc; then
                                     echo "      - name: \"\$NAME\"" >> migrate.yaml
                                     echo "        containers:" >> migrate.yaml
                                     CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
@@ -67,15 +81,14 @@ EOF
                                         echo "            env: [\"APP_MODE\"]" >> migrate.yaml
                                     done
                                 fi
-                            fi
-                        done
+                            done
+                        fi
 
-                        echo "    deployments:" >> migrate.yaml
-                        # 2. Loop khusus Deployment Native
-                        for NAME in \$CLEAN_WORKLOADS; do
-                            if [ -n "\$NAME" ]; then
-                                IS_DEPLOY=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null || true)
-                                if [ -n "\$IS_DEPLOY" ]; then
+                        # Write Deployments jika ada
+                        if [ -n "\$HAS_DEPLOY" ]; then
+                            echo "    deployments:" >> migrate.yaml
+                            for NAME in \$CLEAN_WORKLOADS; do
+                                if oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o name --insecure-skip-tls-verify=true 2>/dev/null | grep -q deployment; then
                                     echo "      - name: \"\$NAME\"" >> migrate.yaml
                                     echo "        containers:" >> migrate.yaml
                                     CONTAINERS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
@@ -84,8 +97,8 @@ EOF
                                         echo "            env: [\"APP_MODE\"]" >> migrate.yaml
                                     done
                                 fi
-                            fi
-                        done
+                            done
+                        fi
                     """
 
                     writeJSON(file: '.migration-work/config.json', json: config)
