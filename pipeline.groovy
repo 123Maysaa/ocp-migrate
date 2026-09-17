@@ -42,18 +42,15 @@ pipeline {
 
                     config = readYaml(file: params.ENV_FILE)
 
-                    // Menggunakan credentials OCP agar perintah 'oc' di Bash bisa membaca cluster
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
                         sh """#!/bin/bash
                             set -eu
                             
-                            # Login singkat CLI untuk sesi workspace
                             oc login ${config.ocp} --token="\$OCP_TOKEN" --insecure-skip-tls-verify=true >/dev/null
 
                             RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
                             CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
 
-                            # Detect ketersediaan DC & Deploy secara akurat
                             HAS_DC=""
                             HAS_DEPLOY=""
                             for NAME in \$CLEAN_WORKLOADS; do
@@ -72,7 +69,6 @@ data:
   - namespace: "${params.TARGET_NAMESPACE}"
 EOF
 
-                            # Write DeploymentConfigs jika ada
                             if [ -n "\$HAS_DC" ]; then
                                 echo "    deploymentconfigs:" >> migrate.yaml
                                 for NAME in \$CLEAN_WORKLOADS; do
@@ -88,7 +84,6 @@ EOF
                                 done
                             fi
 
-                            # Write Deployments jika ada
                             if [ -n "\$HAS_DEPLOY" ]; then
                                 echo "    deployments:" >> migrate.yaml
                                 for NAME in \$CLEAN_WORKLOADS; do
@@ -147,7 +142,9 @@ EOF
                                 openshift.withProject(item.namespace) {
                                     def existing = openshift.raw('get', 'deployment', item.target,
                                         '--ignore-not-found', '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true').out.trim()
-                                    if (existing) { error("Deployment tujuan sudah ada: ${item.namespace}/${item.target}") }
+                                    if (existing) { 
+                                        echo "Deployment tujuan ${item.namespace}/${item.target} sudah ada, melanjutkan proses overwrite/update..." 
+                                    }
                                     openshift.raw('create', '--dry-run=server', '-f', item.deploymentFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
                                     openshift.raw('apply', '--dry-run=server', '-f', item.connectionFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
                                     openshift.raw('apply', '--dry-run=server', '-f', item.staticFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
@@ -221,8 +218,8 @@ EOF
                         openshift.withCluster(config.ocp, OCP_TOKEN) {
                             plan.each { item ->
                                 openshift.withProject(item.namespace) {
-                                    openshift.raw('create', '-f', item.deploymentFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
-                                    echo "Dibuat ${item.namespace}/${item.target}, replica=1; pemeriksaan aplikasi manual."
+                                    openshift.raw('apply', '-f', item.deploymentFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
+                                    echo "Di-apply/update ${item.namespace}/${item.target}, replica=1; pemeriksaan aplikasi manual."
                                 }
                             }
                         }
