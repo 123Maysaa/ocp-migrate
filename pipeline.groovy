@@ -13,32 +13,40 @@ pipeline {
         string(name: 'ENV_FILE', defaultValue: 'env.yaml', description: 'Konfigurasi Jenkins/OCP/Vault')
         string(name: 'SYNC_TIMEOUT_SECONDS', defaultValue: '180', description: 'Batas tunggu sinkronisasi VSO')
         
-        // 1. Parameter Pilihan Namespace/Project dari OpenShift
-        extendedChoice(
+        // 1. Single Select Namespace dari OpenShift
+        activeChoice(
             name: 'TARGET_NAMESPACE',
-            type: 'PT_SINGLE_SELECT',
+            choiceType: 'PT_SINGLE_SELECT',
             description: 'Pilih Project OpenShift yang akan dimigrasikan',
-            groovyScript: '''
-                def command = "oc get projects -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
-                def proc = command.execute()
-                proc.waitFor()
-                return proc.text.tokenize(' ')
-            '''
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [classpath: [], sandbox: false, script: 'return ["error"]'],
+                script: [classpath: [], sandbox: false, script: '''
+                    def command = "oc get projects -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
+                    def proc = command.execute()
+                    proc.waitFor()
+                    return proc.text.tokenize(' ')
+                ''']
+            ]
         )
         
-        // 2. Parameter Pilihan Workload (Multi-Select) Berdasarkan Namespace
+        // 2. Checkbox Multi-Select Workload Berdasarkan Namespace
         reactiveChoice(
             name: 'SELECTED_WORKLOADS',
-            type: 'PT_CHECKBOX',
+            choiceType: 'PT_CHECKBOX',
             description: 'Pilih DeploymentConfig / Deployment yang akan diintegrasikan',
             referencedParameters: 'TARGET_NAMESPACE',
-            groovyScript: '''
-                if (!TARGET_NAMESPACE) return []
-                def command = "oc get dc,deploy -n ${TARGET_NAMESPACE} -o jsonpath='{range .items[*]}{.kind}{\\\\/}{.metadata.name}{\\\\n}{end}' --insecure-skip-tls-verify=true"
-                def proc = command.execute()
-                proc.waitFor()
-                return proc.text.readLines()
-            '''
+            script: [
+                $class: 'GroovyScript',
+                fallbackScript: [classpath: [], sandbox: false, script: 'return ["error"]'],
+                script: [classpath: [], sandbox: false, script: '''
+                    if (!TARGET_NAMESPACE) return []
+                    def command = "oc get dc,deploy -n ${TARGET_NAMESPACE} -o jsonpath='{range .items[*]}{.kind}{\\\\/}{.metadata.name}{\\\\n}{end}' --insecure-skip-tls-verify=true"
+                    def proc = command.execute()
+                    proc.waitFor()
+                    return proc.text.readLines()
+                ''']
+            ]
         )
     }
     stages {
