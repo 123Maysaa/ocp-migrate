@@ -22,11 +22,16 @@ pipeline {
                 $class: 'GroovyScript',
                 fallbackScript: [classpath: [], sandbox: false, script: 'return ["bebas-openshift-vault"]'],
                 script: [classpath: [], sandbox: false, script: '''
-                    def command = "oc get projects -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
-                    def proc = command.execute()
-                    proc.waitFor()
-                    def res = proc.text.tokenize(' ')
-                    return res ?: ["bebas-openshift-vault"]
+                    try {
+                        def cmd = "oc get projects -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
+                        def proc = cmd.execute()
+                        proc.waitForOrKill(3000)
+                        def list = proc.text.tokenize(' ')
+                        def filtered = list.findAll { !it.startsWith("kube-") && !it.startsWith("openshift-") }
+                        return filtered ?: ["bebas-openshift-vault"]
+                    } catch (Exception e) {
+                        return ["bebas-openshift-vault"]
+                    }
                 ''']
             ]
         )
@@ -39,14 +44,18 @@ pipeline {
             referencedParameters: 'TARGET_NAMESPACE',
             script: [
                 $class: 'GroovyScript',
-                fallbackScript: [classpath: [], sandbox: false, script: 'return ["pikachu-dc"]'],
+                fallbackScript: [classpath: [], sandbox: false, script: 'return ["pikachu-dc", "gengar-api"]'],
                 script: [classpath: [], sandbox: false, script: '''
-                    if (!TARGET_NAMESPACE) return []
-                    def command = "oc get dc,deploy -n ${TARGET_NAMESPACE} -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
-                    def proc = command.execute()
-                    proc.waitFor()
-                    def res = proc.text.tokenize(' ')
-                    return res ?: ["pikachu-dc"]
+                    if (!TARGET_NAMESPACE) return ["pikachu-dc"]
+                    try {
+                        def cmd = "oc get dc,deploy -n ${TARGET_NAMESPACE} -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
+                        def proc = cmd.execute()
+                        proc.waitForOrKill(3000)
+                        def list = proc.text.tokenize(' ')
+                        return list ?: ["pikachu-dc", "gengar-api"]
+                    } catch (Exception e) {
+                        return ["pikachu-dc", "gengar-api"]
+                    }
                 ''']
             ]
         )
@@ -71,7 +80,7 @@ pipeline {
                     sh """#!/bin/bash
                         set -eu
                         
-                        # Bersihkan format string input dari Active Choices
+                        # Cleansing format string input dari Active Choices
                         RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
                         CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
 
@@ -85,7 +94,7 @@ EOF
                                 echo "      - name: \"\$NAME\"" >> migrate.yaml
                                 echo "        containers:" >> migrate.yaml
                                 
-                                # Ambil daftar nama container bawaan dari cluster OCP
+                                # Ambil nama container dari cluster OCP
                                 CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true 2>/dev/null || oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true 2>/dev/null || echo "app")
                                 
                                 for c in \$CONTAINERS; do
