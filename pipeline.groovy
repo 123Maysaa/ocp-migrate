@@ -13,51 +13,17 @@ pipeline {
         string(name: 'ENV_FILE', defaultValue: 'env.yaml', description: 'Konfigurasi Jenkins/OCP/Vault')
         string(name: 'SYNC_TIMEOUT_SECONDS', defaultValue: '180', description: 'Batas tunggu sinkronisasi VSO')
         
-        // 1. Parameter Single Select Project
-        activeChoice(
-            name: 'TARGET_NAMESPACE',
-            choiceType: 'PT_SINGLE_SELECT',
-            description: 'Pilih Project OpenShift yang akan dimigrasikan',
-            script: [
-                $class: 'GroovyScript',
-                fallbackScript: [classpath: [], sandbox: false, script: 'return ["bebas-openshift-vault"]'],
-                script: [classpath: [], sandbox: false, script: '''
-                    try {
-                        def cmd = "oc get projects -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
-                        def proc = cmd.execute()
-                        proc.waitForOrKill(3000)
-                        def list = proc.text.tokenize(' ')
-                        def filtered = list.findAll { !it.startsWith("kube-") && !it.startsWith("openshift-") }
-                        return filtered ?: ["bebas-openshift-vault"]
-                    } catch (Exception e) {
-                        return ["bebas-openshift-vault"]
-                    }
-                ''']
-            ]
+        // Parameter Choice Standard (Langsung muncul di Dropdown GUI)
+        choice(
+            name: 'TARGET_NAMESPACE', 
+            choices: ['bebas-openshift-vault', 'task-api-a'], 
+            description: 'Pilih Project OpenShift yang akan dimigrasikan'
         )
         
-        // 2. Parameter Checkbox Workload
-        reactiveChoice(
-            name: 'SELECTED_WORKLOADS',
-            choiceType: 'PT_CHECKBOX',
-            description: 'Pilih DeploymentConfig / Deployment yang akan diintegrasikan',
-            referencedParameters: 'TARGET_NAMESPACE',
-            script: [
-                $class: 'GroovyScript',
-                fallbackScript: [classpath: [], sandbox: false, script: 'return ["pikachu-dc", "gengar-api"]'],
-                script: [classpath: [], sandbox: false, script: '''
-                    if (!TARGET_NAMESPACE) return ["pikachu-dc"]
-                    try {
-                        def cmd = "oc get dc,deploy -n ${TARGET_NAMESPACE} -o jsonpath='{.items[*].metadata.name}' --insecure-skip-tls-verify=true"
-                        def proc = cmd.execute()
-                        proc.waitForOrKill(3000)
-                        def list = proc.text.tokenize(' ')
-                        return list ?: ["pikachu-dc", "gengar-api"]
-                    } catch (Exception e) {
-                        return ["pikachu-dc", "gengar-api"]
-                    }
-                ''']
-            ]
+        choice(
+            name: 'SELECTED_WORKLOADS', 
+            choices: ['pikachu-dc gengar-api', 'pikachu-dc', 'gengar-api'], 
+            description: 'Pilih Workload yang akan diintegrasikan (Pisahkan dengan spasi jika lebih dari satu)'
         )
     }
     stages {
@@ -80,7 +46,7 @@ pipeline {
                     sh """#!/bin/bash
                         set -eu
                         
-                        # Cleansing format string input dari Active Choices
+                        # Cleansing format string input pilihan workload
                         RAW_WORKLOADS="${params.SELECTED_WORKLOADS}"
                         CLEAN_WORKLOADS=\$(echo "\$RAW_WORKLOADS" | tr ',' ' ')
 
