@@ -13,7 +13,6 @@ pipeline {
         string(name: 'ENV_FILE', defaultValue: 'env.yaml', description: 'Konfigurasi Jenkins/OCP/Vault')
         string(name: 'SYNC_TIMEOUT_SECONDS', defaultValue: '180', description: 'Batas tunggu sinkronisasi VSO')
         
-        // Parameter Choice Standard
         choice(
             name: 'TARGET_NAMESPACE', 
             choices: ['bebas-openshift-vault', 'task-api-a'], 
@@ -143,9 +142,9 @@ EOF
                                     def existing = openshift.raw('get', 'deployment', item.target,
                                         '--ignore-not-found', '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true').out.trim()
                                     if (existing) { 
-                                        echo "Deployment tujuan ${item.namespace}/${item.target} sudah ada, melanjutkan proses overwrite/update..." 
+                                        echo "Deployment tujuan ${item.namespace}/${item.target} sudah ada, melakukan uji dry-run update..." 
                                     }
-                                    openshift.raw('create', '--dry-run=server', '-f', item.deploymentFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
+                                    openshift.raw('apply', '--dry-run=server', '-f', item.deploymentFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
                                     openshift.raw('apply', '--dry-run=server', '-f', item.connectionFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
                                     openshift.raw('apply', '--dry-run=server', '-f', item.staticFile, '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
                                     openshift.raw('get', 'vaultauths.secrets.hashicorp.com', '-o=name', '--certificate-authority=""', '--insecure-skip-tls-verify=true')
