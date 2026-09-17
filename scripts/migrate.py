@@ -141,15 +141,12 @@ def transform_container(container, config, sources, destination, merged):
             'Env pilihan tidak ditemukan pada container ' + container['name'])
     for entry in original_env:
         if entry['name'] in chosen_env:
-            # Dynamic fieldRef/resourceFieldRef cannot be frozen into a shared static value.
             require('value' in entry or 'valueFrom' not in entry,
                     'Env pilihan harus literal; valueFrom dipindah melalui daftar Secret/ConfigMap: ' + entry['name'])
             value = entry.get('value', '')
             require('$(' not in value, 'Env dengan ekspansi runtime belum didukung: ' + entry['name'])
             merged[entry['name']] = value.encode('utf-8')
 
-    # Preserve envFrom usage and its prefix. All migrated references share one Secret.
-    # Consequently envFrom exposes the merged key set, as documented in README.
     all_from = container.get('envFrom', [])
     rewritten_from = []
     for entry in all_from:
@@ -200,7 +197,6 @@ def deployment(source, item, sources, destination, merged):
     meta.pop('creationTimestamp', None)
     meta['labels'] = prefixed_labels(meta.get('labels', {}))
     require(meta['labels'], 'Pod sumber harus mempunyai label untuk selector Deployment baru')
-    # Remove controller-managed metadata rather than propagating source rollout state.
     for key in ('name', 'namespace', 'uid', 'resourceVersion', 'ownerReferences', 'managedFields', 'generateName'):
         meta.pop(key, None)
     pod = template['spec']
@@ -213,7 +209,6 @@ def deployment(source, item, sources, destination, merged):
             conf = configs[container['name']]
             selected |= selected_sources(conf)
             transform_container(container, conf, sources, destination, merged)
-    # Volumes are pod-scoped. Only rewrite if every mounting container selected the source.
     for volume in pod.get('volumes', []):
         identities = []
         for field, kind in [('secret', 'secret'), ('configMap', 'configmap')]:
@@ -265,7 +260,6 @@ def deployment(source, item, sources, destination, merged):
                        if k in ('maxSurge', 'maxUnavailable')}
             if rolling:
                 spec['strategy']['rollingUpdate'] = rolling
-        # Freeze currently resolved template images; DC ImageChange triggers are not copied.
     require(all(c.get('image') for c in all_containers), 'Image container sumber belum terisi')
     annotations = copy.deepcopy(source['metadata'].get('annotations', {}))
     for key in list(annotations):
@@ -289,20 +283,22 @@ def prepare():
     plan = []
     for index, item in enumerate(entries(read(WORK / 'input.json'))):
         ns, service = item['namespace'], item['name']
-        destination = name('vaultsecret-' + ns + '-' + service)
-        for generated_secret in (destination, 'holder-secret-' + service):
+        
+        # Suffix '-vault' ditambahkan pada vault_path, destination secret, dan policy
+        vault_path = service + '-vault'
+        destination = name('vaultsecret-' + ns + '-' + vault_path)
+        
+        for generated_secret in (destination, 'holder-secret-' + vault_path):
             require((ns, 'secret', generated_secret) not in snapshots,
                     'Nama Secret tujuan bertabrakan dengan Secret sumber: ' + generated_secret)
         sources, merged = {}, {}
         for c in item['containers']:
             for kind, resource in sorted(selected_sources(c)):
                 sources[(kind, resource)] = resource_data(snapshots[(ns, kind, resource)])
-                merged.update(sources[(kind, resource)])  # Initial scope assumes no conflicting keys.
+                merged.update(sources[(kind, resource)])
         source = snapshots[(ns, item['kind'], service)]
         clone = deployment(source, item, sources, destination, merged)
         require(merged, 'Tidak ada data untuk workload ' + service)
-        # Static Vault strings preserve all UTF-8 bytes (including trailing newlines).
-        # Non-UTF8 binary data needs an explicit VSO transformation, not silent corruption.
         try:
             payload = {k: v.decode('utf-8') for k, v in merged.items()}
         except UnicodeDecodeError:
@@ -310,7 +306,7 @@ def prepare():
         prefix = str(WORK / str(index))
         record = dict(index=index, namespace=ns, source=service, target=clone['metadata']['name'],
                       destination=destination, mount=ns + '-kv', authMount=ns + '-approle',
-                      policy=ns + '-' + service + '-access')
+                      policy=ns + '-' + vault_path + '-access', vaultPath=vault_path)
         for field, suffix in [('deploymentFile', 'deployment'), ('connectionFile', 'connection'),
                               ('staticFile', 'static'), ('holderFile', 'holder'), ('authFile', 'auth'),
                               ('payloadFile', 'payload'), ('expectedFile', 'expected'), ('actualFile', 'actual')]:
@@ -320,10 +316,10 @@ def prepare():
         write(record['expectedFile'], {k: base64.b64encode(v).decode('ascii') for k, v in merged.items()})
         write(record['connectionFile'], manifest('VaultConnection', ns, 'vault-connection-' + ns,
               dict(address=config['vaultaddr'], skipTLSVerify=True)))
-        write(record['staticFile'], manifest('VaultStaticSecret', ns, 'vaultstaticsecret-' + ns + '-' + service,
-              dict(vaultAuthRef='vaultauth-' + service, mount=record['mount'], type='kv-v2', path=service,
+        write(record['staticFile'], manifest('VaultStaticSecret', ns, 'vaultstaticsecret-' + ns + '-' + vault_path,
+              dict(vaultAuthRef='vaultauth-' + vault_path, mount=record['mount'], type='kv-v2', path=vault_path,
                    refreshAfter='5s', destination=dict(create=True, name=destination,
-                       transformation=dict(excludeRaw=True)))))
+                               transformation=dict(excludeRaw=True)))))
         plan.append(record)
         print('Siap: {}/{} -> {}; {} key'.format(ns, service, record['target'], len(merged)))
     write(WORK / 'plan.json', plan)
@@ -339,7 +335,6 @@ def provision():
     plan = read(WORK / 'plan.json')
     auth = vault('auth', 'list', '-format=json', json_output=True)
     mounts = vault('secrets', 'list', '-format=json', json_output=True)
-    # Validate all existing mount types before the first mutation.
     for item in plan:
         a, m = auth.get(item['authMount'] + '/'), mounts.get(item['mount'] + '/')
         require(not a or a['type'] == 'approle', 'Auth mount existing bukan AppRole')
@@ -347,30 +342,33 @@ def provision():
                 'KV mount existing bukan KV v2')
     enabled = set()
     for item in plan:
-        ns, service = item['namespace'], item['source']
+        ns = item['namespace']
+        vault_path = item['vaultPath']
         if ns not in enabled:
             if item['authMount'] + '/' not in auth:
                 vault('auth', 'enable', '-path=' + item['authMount'], 'approle')
             if item['mount'] + '/' not in mounts:
                 vault('secrets', 'enable', '-path=' + item['mount'], 'kv-v2')
             enabled.add(ns)
-        vault('kv', 'put', '-mount=' + item['mount'], service, '@' + item['payloadFile'])
+        
+        # Simpan payload ke path bernama '<workload>-vault'
+        vault('kv', 'put', '-mount=' + item['mount'], vault_path, '@' + item['payloadFile'])
         policy_file = WORK / ('{}-policy.hcl'.format(item['index']))
-        policy_file.write_text('path "' + item['mount'] + '/data/' + service +
+        policy_file.write_text('path "' + item['mount'] + '/data/' + vault_path +
                                '" { capabilities = ["read"] }\n', encoding='utf-8')
         vault('policy', 'write', item['policy'], str(policy_file))
-        role_path = 'auth/' + item['authMount'] + '/role/' + service
+        role_path = 'auth/' + item['authMount'] + '/role/' + vault_path
         vault('write', role_path, 'token_policies=' + item['policy'])
         role_id = vault('read', '-field=role_id', role_path + '/role-id')
         secret_id = vault('write', '-field=secret_id', '-f', role_path + '/secret-id')
         require(role_id and secret_id, 'Vault tidak mengembalikan RoleID/SecretID')
         write(item['holderFile'], dict(apiVersion='v1', kind='Secret',
-              metadata=dict(name=name('holder-secret-' + service), namespace=ns),
+              metadata=dict(name=name('holder-secret-' + vault_path), namespace=ns),
               type='Opaque', stringData=dict(id=secret_id)))
-        write(item['authFile'], manifest('VaultAuth', ns, 'vaultauth-' + service,
+        write(item['authFile'], manifest('VaultAuth', ns, 'vaultauth-' + vault_path,
               dict(vaultConnectionRef='vault-connection-' + ns, method='appRole', mount=item['authMount'],
-                   appRole=dict(roleId=role_id, secretRef='holder-secret-' + service))))
-        print('Vault siap: ' + item['mount'] + '/' + service)
+                   appRole=dict(roleId=role_id, secretRef='holder-secret-' + vault_path))))
+        print('Vault siap: ' + item['mount'] + '/' + vault_path)
 
 
 def verify(index):
@@ -404,6 +402,5 @@ if __name__ == '__main__':
         print('ERROR: ' + str(exc), file=sys.stderr)
         sys.exit(1)
     except Exception as exc:
-        # Parse/subprocess exceptions can include sensitive input. Do not print the payload.
         print('ERROR: {} saat memproses migrasi; periksa struktur input/resource'.format(type(exc).__name__), file=sys.stderr)
         sys.exit(1)
