@@ -63,11 +63,10 @@ pipeline {
                                 fi
                             done
 
-                            cat <<EOF > migrate.yaml
-data:
-  - namespace: "${params.TARGET_NAMESPACE}"
-EOF
+                            echo "data:" > migrate.yaml
+                            echo "  - namespace: \"${params.TARGET_NAMESPACE}\"" >> migrate.yaml
 
+                            # 1. Tulis DeploymentConfigs secara dinamis
                             if [ -n "\$HAS_DC" ]; then
                                 echo "    deploymentconfigs:" >> migrate.yaml
                                 for NAME in \$CLEAN_WORKLOADS; do
@@ -77,12 +76,30 @@ EOF
                                         CONTAINERS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
                                         for c in \$CONTAINERS; do
                                             echo "          - name: \"\$c\"" >> migrate.yaml
-                                            echo "            env: [\"APP_MODE\"]" >> migrate.yaml
+                                            
+                                            SECRETS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath="{.spec.template.spec.containers[?(@.name=='\$c')].env[*].valueFrom.secretKeyRef.name}" --insecure-skip-tls-verify=true 2>/dev/null | tr ' ' '\n' | sort -u | xargs || true)
+                                            echo "            secrets:" >> migrate.yaml
+                                            for s in \$SECRETS; do
+                                                [ -n "\$s" ] && echo "              - \"\$s\"" >> migrate.yaml
+                                            done
+
+                                            CONFIGMAPS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath="{.spec.template.spec.containers[?(@.name=='\$c')].envFrom[*].configMapRef.name}" --insecure-skip-tls-verify=true 2>/dev/null | tr ' ' '\n' | sort -u | xargs || true)
+                                            echo "            configmap:" >> migrate.yaml
+                                            for cm in \$CONFIGMAPS; do
+                                                [ -n "\$cm" ] && echo "              - \"\$cm\"" >> migrate.yaml
+                                            done
+
+                                            ENVS=\$(oc get dc "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath="{.spec.template.spec.containers[?(@.name=='\$c')].env[?(@.value)].name}" --insecure-skip-tls-verify=true 2>/dev/null | tr ' ' '\n' | sort -u | xargs || true)
+                                            echo "            env:" >> migrate.yaml
+                                            for e in \$ENVS; do
+                                                [ -n "\$e" ] && echo "              - \"\$e\"" >> migrate.yaml
+                                            done
                                         done
                                     fi
                                 done
                             fi
 
+                            # 2. Tulis Deployments secara dinamis
                             if [ -n "\$HAS_DEPLOY" ]; then
                                 echo "    deployments:" >> migrate.yaml
                                 for NAME in \$CLEAN_WORKLOADS; do
@@ -92,7 +109,24 @@ EOF
                                         CONTAINERS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}' --insecure-skip-tls-verify=true)
                                         for c in \$CONTAINERS; do
                                             echo "          - name: \"\$c\"" >> migrate.yaml
-                                            echo "            env: [\"APP_MODE\"]" >> migrate.yaml
+                                            
+                                            SECRETS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath="{.spec.template.spec.containers[?(@.name=='\$c')].env[*].valueFrom.secretKeyRef.name}" --insecure-skip-tls-verify=true 2>/dev/null | tr ' ' '\n' | sort -u | xargs || true)
+                                            echo "            secrets:" >> migrate.yaml
+                                            for s in \$SECRETS; do
+                                                [ -n "\$s" ] && echo "              - \"\$s\"" >> migrate.yaml
+                                            done
+
+                                            CONFIGMAPS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath="{.spec.template.spec.containers[?(@.name=='\$c')].envFrom[*].configMapRef.name}" --insecure-skip-tls-verify=true 2>/dev/null | tr ' ' '\n' | sort -u | xargs || true)
+                                            echo "            configmap:" >> migrate.yaml
+                                            for cm in \$CONFIGMAPS; do
+                                                [ -n "\$cm" ] && echo "              - \"\$cm\"" >> migrate.yaml
+                                            done
+
+                                            ENVS=\$(oc get deploy "\$NAME" -n ${params.TARGET_NAMESPACE} -o jsonpath="{.spec.template.spec.containers[?(@.name=='\$c')].env[?(@.value)].name}" --insecure-skip-tls-verify=true 2>/dev/null | tr ' ' '\n' | sort -u | xargs || true)
+                                            echo "            env:" >> migrate.yaml
+                                            for e in \$ENVS; do
+                                                [ -n "\$e" ] && echo "              - \"\$e\"" >> migrate.yaml
+                                            done
                                         done
                                     fi
                                 done
