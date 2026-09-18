@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
-import json
-import os
 import sys
 import subprocess
-import yaml
 
 target_ns = sys.argv[1]
 raw_workloads = sys.argv[2].replace(',', ' ').split()
@@ -24,15 +21,12 @@ for name in raw_workloads:
         containers_str = run_oc(['get', 'dc', name, '-o', "jsonpath={.spec.template.spec.containers[*].name}"])
         containers_list = []
         for c in containers_str.split():
-            # Get secrets
             secrets_raw = run_oc(['get', 'dc', name, '-o', f"jsonpath={{.spec.template.spec.containers[?(@.name=='{c}')].env[*].valueFrom.secretKeyRef.name}}"])
             secrets = sorted(list(set(secrets_raw.split())))
             
-            # Get configmaps
             cms_raw = run_oc(['get', 'dc', name, '-o', f"jsonpath={{.spec.template.spec.containers[?(@.name=='{c}')].envFrom[*].configMapRef.name}}"])
             cms = sorted(list(set(cms_raw.split())))
             
-            # Get literal envs
             envs_raw = run_oc(['get', 'dc', name, '-o', f"jsonpath={{.spec.template.spec.containers[?(@.name=='{c}')].env[?(@.value)].name}}"])
             envs = sorted(list(set(envs_raw.split())))
             
@@ -58,14 +52,49 @@ for name in raw_workloads:
             
         result_data["deployments"].append({"name": name, "containers": containers_list})
 
-# Cleanup empty lists
-if not result_data["deploymentconfigs"]:
-    del result_data["deploymentconfigs"]
-if not result_data["deployments"]:
-    del result_data["deployments"]
-
-output = {"data": [result_data]}
+# Menulis berkas migrate.yaml secara langsung tanpa modul PyYAML
 with open('migrate.yaml', 'w') as f:
-    yaml.dump(output, f, default_flow_style=False)
+    f.write("data:\n")
+    f.write(f'  - namespace: "{result_data["namespace"]}"\n')
+    
+    if result_data["deploymentconfigs"]:
+        f.write("    deploymentconfigs:\n")
+        for dc in result_data["deploymentconfigs"]:
+            f.write(f'      - name: "{dc["name"]}"\n')
+            f.write("        containers:\n")
+            for c in dc["containers"]:
+                f.write(f'          - name: "{c["name"]}"\n')
+                if c["secrets"]:
+                    f.write("            secrets:\n")
+                    for s in c["secrets"]:
+                        f.write(f'              - "{s}"\n')
+                if c["configmap"]:
+                    f.write("            configmap:\n")
+                    for cm in c["configmap"]:
+                        f.write(f'              - "{cm}"\n')
+                if c["env"]:
+                    f.write("            env:\n")
+                    for e in c["env"]:
+                        f.write(f'              - "{e}"\n')
+
+    if result_data["deployments"]:
+        f.write("    deployments:\n")
+        for d in result_data["deployments"]:
+            f.write(f'      - name: "{d["name"]}"\n')
+            f.write("        containers:\n")
+            for c in d["containers"]:
+                f.write(f'          - name: "{c["name"]}"\n')
+                if c["secrets"]:
+                    f.write("            secrets:\n")
+                    for s in c["secrets"]:
+                        f.write(f'              - "{s}"\n')
+                if c["configmap"]:
+                    f.write("            configmap:\n")
+                    for cm in c["configmap"]:
+                        f.write(f'              - "{cm}"\n')
+                if c["env"]:
+                    f.write("            env:\n")
+                    for e in c["env"]:
+                        f.write(f'              - "{e}"\n')
 
 print("migrate.yaml berhasil dibuat secara presisi.")
