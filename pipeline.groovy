@@ -42,7 +42,7 @@ pipeline {
                     config = readYaml(file: params.ENV_FILE)
 
                     withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        // Menggunakan string tunggal (') untuk menghindari ekspansi Groovy yang memicu error EOF
+                        // Menggunakan single-quote untuk menghindari konflik interpolasi Groovy yang memicu EOF
                         sh 'oc login ' + config.ocp + ' --token="$OCP_TOKEN" --insecure-skip-tls-verify=true >/dev/null'
                         sh 'python3 scripts/generate_input.py "' + params.TARGET_NAMESPACE + '" "' + params.SELECTED_WORKLOADS + '"'
                     }
