@@ -40,7 +40,7 @@ def write(path, value):
 def name(value, limit=253):
     require(isinstance(value, str) and len(value) <= limit and
             re.fullmatch(r'[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?', value),
-            'Nama resource tidak valid atau terlalu panjang')
+            'Nama resource tidak valid atau terlalu panjang: ' + str(value))
     return value
 
 
@@ -277,51 +277,87 @@ def manifest(kind, ns, resource_name, spec):
 
 def prepare():
     config = read(WORK / 'config.json')
+    cluster_name = config.get('cluster_name', 'ocp-dgt-jkt')
+    
     snapshots = {}
     for index, request in enumerate(read(WORK / 'requests.json')):
         snapshots[(request['namespace'], request['kind'], request['name'])] = read(WORK / ('source-{}.json'.format(index)))
+    
     plan = []
     for index, item in enumerate(entries(read(WORK / 'input.json'))):
         ns, service = item['namespace'], item['name']
         
-        # Suffix '-vault' ditambahkan pada vault_path, destination secret, dan policy
-        vault_path = service + '-vault'
-        destination = name('vaultsecret-' + ns + '-' + vault_path)
+        # --- ATURAN PENAMAAN BARU ---
+        mount_path = ns + '-kv'                   # 1. Mount secret pada vault: [namespace]-kv
+        secret_path = service                     # 2. Path secret: [nama secret existing]
+        destination = name(service + '-vault')     # 3. Destination secret: [nama secret existing]-vault
         
-        for generated_secret in (destination, 'holder-secret-' + vault_path):
+        approle_name = 'approle-' + cluster_name  # 4. AppRole naming: approle-[cluster_name]
+        policy_name = 'policy-' + cluster_name    # 5. Policy naming: policy-[cluster_name]
+        
+        holder_secret_name = name('holder-secret-' + ns)           # 6. Holder secret: holder-secret-[namespace]
+        connection_name = name('vault-connection-' + ns)          # 7. Vault Connection: vault-connection-[namespace]
+        auth_name = name('vault-auth-' + ns)                      # 8. Vault Auth: vault-auth-[namespace]
+        static_secret_name = name('vault-static-secret-' + service)# 9. Vault Static Secret: vault-static-secret-[nama secret existing]
+        
+        for generated_secret in (destination, holder_secret_name):
             require((ns, 'secret', generated_secret) not in snapshots,
                     'Nama Secret tujuan bertabrakan dengan Secret sumber: ' + generated_secret)
+        
         sources, merged = {}, {}
         for c in item['containers']:
             for kind, resource in sorted(selected_sources(c)):
                 sources[(kind, resource)] = resource_data(snapshots[(ns, kind, resource)])
                 merged.update(sources[(kind, resource)])
+        
         source = snapshots[(ns, item['kind'], service)]
         clone = deployment(source, item, sources, destination, merged)
         require(merged, 'Tidak ada data untuk workload ' + service)
+        
         try:
             payload = {k: v.decode('utf-8') for k, v in merged.items()}
         except UnicodeDecodeError:
             raise MigrationError('Data biner non-UTF8 belum didukung: ' + service)
+        
         prefix = str(WORK / str(index))
-        record = dict(index=index, namespace=ns, source=service, target=clone['metadata']['name'],
-                      destination=destination, mount=ns + '-kv', authMount=ns + '-approle',
-                      policy=ns + '-' + vault_path + '-access', vaultPath=vault_path)
+        record = dict(
+            index=index,
+            namespace=ns,
+            source=service,
+            target=clone['metadata']['name'],
+            destination=destination,
+            mount=mount_path,
+            vaultPath=secret_path,
+            approle=approle_name,
+            policy=policy_name,
+            holderSecretName=holder_secret_name,
+            connectionName=connection_name,
+            authName=auth_name,
+            staticSecretName=static_secret_name
+        )
+        
         for field, suffix in [('deploymentFile', 'deployment'), ('connectionFile', 'connection'),
                               ('staticFile', 'static'), ('holderFile', 'holder'), ('authFile', 'auth'),
                               ('payloadFile', 'payload'), ('expectedFile', 'expected'), ('actualFile', 'actual')]:
             record[field] = prefix + '-' + suffix + '.json'
+        
         write(record['deploymentFile'], clone)
         write(record['payloadFile'], payload)
         write(record['expectedFile'], {k: base64.b64encode(v).decode('ascii') for k, v in merged.items()})
-        write(record['connectionFile'], manifest('VaultConnection', ns, 'vault-connection-' + ns,
+        
+        # Manifest 1: VaultConnection
+        write(record['connectionFile'], manifest('VaultConnection', ns, connection_name,
               dict(address=config['vaultaddr'], skipTLSVerify=True)))
-        write(record['staticFile'], manifest('VaultStaticSecret', ns, 'vaultstaticsecret-' + ns + '-' + vault_path,
-              dict(vaultAuthRef='vaultauth-' + vault_path, mount=record['mount'], type='kv-v2', path=vault_path,
+        
+        # Manifest 2: VaultStaticSecret
+        write(record['staticFile'], manifest('VaultStaticSecret', ns, static_secret_name,
+              dict(vaultAuthRef=auth_name, mount=mount_path, type='kv-v2', path=secret_path,
                    refreshAfter='5s', destination=dict(create=True, name=destination,
                                transformation=dict(excludeRaw=True)))))
+        
         plan.append(record)
         print('Siap: {}/{} -> {}; {} key'.format(ns, service, record['target'], len(merged)))
+        
     write(WORK / 'plan.json', plan)
 
 
@@ -333,42 +369,50 @@ def vault(*args, json_output=False):
 
 def provision():
     plan = read(WORK / 'plan.json')
-    auth = vault('auth', 'list', '-format=json', json_output=True)
-    mounts = vault('secrets', 'list', '-format=json', json_output=True)
-    for item in plan:
-        a, m = auth.get(item['authMount'] + '/'), mounts.get(item['mount'] + '/')
-        require(not a or a['type'] == 'approle', 'Auth mount existing bukan AppRole')
-        require(not m or (m['type'] == 'kv' and str(m.get('options', {}).get('version')) == '2'),
-                'KV mount existing bukan KV v2')
-    enabled = set()
-    for item in plan:
-        ns = item['namespace']
-        vault_path = item['vaultPath']
-        if ns not in enabled:
-            if item['authMount'] + '/' not in auth:
-                vault('auth', 'enable', '-path=' + item['authMount'], 'approle')
-            if item['mount'] + '/' not in mounts:
-                vault('secrets', 'enable', '-path=' + item['mount'], 'kv-v2')
-            enabled.add(ns)
+    auth_list = vault('auth', 'list', '-format=json', json_output=True)
+    mounts_list = vault('secrets', 'list', '-format=json', json_output=True)
+    
+    # 1. Enable AppRole Auth Engine & KV v2 Secret Engine
+    if 'approle/' not in auth_list:
+        vault('auth', 'enable', 'approle')
         
-        # Simpan payload ke path bernama '<workload>-vault'
-        vault('kv', 'put', '-mount=' + item['mount'], vault_path, '@' + item['payloadFile'])
+    enabled_mounts = set()
+    for item in plan:
+        mount_path = item['mount']
+        if mount_path not in enabled_mounts:
+            if (mount_path + '/') not in mounts_list:
+                vault('secrets', 'enable', '-path=' + mount_path, 'kv-v2')
+            enabled_mounts.add(mount_path)
+            
+        # 2. Put Payload Secret ke Vault Path: [nama secret existing]
+        vault('kv', 'put', '-mount=' + mount_path, item['vaultPath'], '@' + item['payloadFile'])
+        
+        # 3. Write Policy: policy-[cluster_name]
         policy_file = WORK / ('{}-policy.hcl'.format(item['index']))
-        policy_file.write_text('path "' + item['mount'] + '/data/' + vault_path +
-                               '" { capabilities = ["read"] }\n', encoding='utf-8')
+        policy_file.write_text('path "' + mount_path + '/data/*" { capabilities = ["read"] }\n', encoding='utf-8')
         vault('policy', 'write', item['policy'], str(policy_file))
-        role_path = 'auth/' + item['authMount'] + '/role/' + vault_path
+        
+        # 4. Write AppRole: approle-[cluster_name]
+        role_path = 'auth/approle/role/' + item['approle']
         vault('write', role_path, 'token_policies=' + item['policy'])
+        
         role_id = vault('read', '-field=role_id', role_path + '/role-id')
         secret_id = vault('write', '-field=secret_id', '-f', role_path + '/secret-id')
         require(role_id and secret_id, 'Vault tidak mengembalikan RoleID/SecretID')
-        write(item['holderFile'], dict(apiVersion='v1', kind='Secret',
-              metadata=dict(name=name('holder-secret-' + vault_path), namespace=ns),
-              type='Opaque', stringData=dict(id=secret_id)))
-        write(item['authFile'], manifest('VaultAuth', ns, 'vaultauth-' + vault_path,
-              dict(vaultConnectionRef='vault-connection-' + ns, method='appRole', mount=item['authMount'],
-                   appRole=dict(roleId=role_id, secretRef='holder-secret-' + vault_path))))
-        print('Vault siap: ' + item['mount'] + '/' + vault_path)
+        
+        # 5. Manifest Holder Secret (Simpan SecretID)
+        write(item['holderFile'], dict(
+            apiVersion='v1', kind='Secret',
+            metadata=dict(name=item['holderSecretName'], namespace=item['namespace']),
+            type='Opaque', stringData=dict(id=secret_id)
+        ))
+        
+        # 6. Manifest VaultAuth
+        write(item['authFile'], manifest('VaultAuth', item['namespace'], item['authName'],
+              dict(vaultConnectionRef=item['connectionName'], method='appRole', mount='approle',
+                   appRole=dict(roleId=role_id, secretRef=item['holderSecretName']))))
+        
+        print('Vault siap: ' + mount_path + '/' + item['vaultPath'])
 
 
 def verify(index):
