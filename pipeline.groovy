@@ -3,6 +3,17 @@ def config
 def requests
 def plan
 
+// Map infrastruktur OpenShift & Vault berdasarkan Cluster
+def clusterMap = [
+    'dgt-jkt'  : [url: 'https://api.dgt-jkt.openshift.domain:6443', cred: 'ocp-token-dgt-jkt', vaultRegion: 'jkt'],
+    'dgt-sby'  : [url: 'https://api.dgt-sby.openshift.domain:6443', cred: 'ocp-token-dgt-sby', vaultRegion: 'sby'],
+    'surr-jkt' : [url: 'https://api.surr-jkt.openshift.domain:6443', cred: 'ocp-token-surr-jkt', vaultRegion: 'jkt'],
+    'surr-sby' : [url: 'https://api.surr-sby.openshift.domain:6443', cred: 'ocp-token-surr-sby', vaultRegion: 'sby'],
+    'core-jkt' : [url: 'https://api.core-jkt.openshift.domain:6443', cred: 'ocp-token-core-jkt', vaultRegion: 'jkt'],
+    'core-sby' : [url: 'https://api.core-sby.openshift.domain:6443', cred: 'ocp-token-core-sby', vaultRegion: 'sby'],
+    'crc-local': [url: 'https://172.22.1.200:6443', cred: 'ocp-token-id', vaultRegion: 'jkt']
+]
+
 pipeline {
     agent any
     options {
@@ -10,20 +21,23 @@ pipeline {
         timeout(time: 30, unit: 'MINUTES')
     }
     parameters {
-        string(name: 'ENV_FILE', defaultValue: 'env.yaml', description: 'Konfigurasi Jenkins/OCP/Vault')
-        string(name: 'SYNC_TIMEOUT_SECONDS', defaultValue: '180', description: 'Batas tunggu sinkronisasi VSO')
-        
+        choice(
+            name: 'TARGET_CLUSTER', 
+            choices: ['crc-local', 'dgt-jkt', 'dgt-sby', 'surr-jkt', 'surr-sby', 'core-jkt', 'core-sby'], 
+            description: 'Pilih Cluster OpenShift Target'
+        )
         choice(
             name: 'TARGET_NAMESPACE', 
             choices: ['bebas-openshift-vault', 'task-api-a'], 
             description: 'Pilih Project OpenShift yang akan dimigrasikan'
         )
-        
         choice(
             name: 'SELECTED_WORKLOADS', 
             choices: ['pikachu-dc gengar-api', 'pikachu-dc', 'gengar-api'], 
             description: 'Pilih Workload yang akan diintegrasikan (Pisahkan dengan spasi jika lebih dari satu)'
         )
+        string(name: 'ENV_FILE', defaultValue: 'env.yaml', description: 'Konfigurasi Jenkins/Vault')
+        string(name: 'SYNC_TIMEOUT_SECONDS', defaultValue: '180', description: 'Batas tunggu sinkronisasi VSO')
     }
     stages {
         stage('Validate Configuration') {
@@ -39,16 +53,36 @@ pipeline {
                         chmod 700 .migration-work
                     '''
 
-                    config = readYaml(file: params.ENV_FILE)
+                    def rawConfig = readYaml(file: params.ENV_FILE)
+                    def selectedCluster = clusterMap[params.TARGET_CLUSTER]
+                    if (!selectedCluster) {
+                        error("Cluster ${params.TARGET_CLUSTER} tidak terdaftar pada clusterMap!")
+                    }
 
-                    withCredentials([string(credentialsId: config.ocpcred, variable: 'OCP_TOKEN')]) {
-                        // Menggunakan single-quote untuk menghindari konflik interpolasi Groovy yang memicu EOF
-                        sh 'oc login ' + config.ocp + ' --token="$OCP_TOKEN" --insecure-skip-tls-verify=true >/dev/null'
+                    env.SELECTED_OCP_URL = selectedCluster.url
+                    env.SELECTED_OCP_CRED = selectedCluster.cred
+
+                    // Login dan Generate Input
+                    withCredentials([string(credentialsId: env.SELECTED_OCP_CRED, variable: 'OCP_TOKEN')]) {
+                        sh 'oc login ' + env.SELECTED_OCP_URL + ' --token="$OCP_TOKEN" --insecure-skip-tls-verify=true >/dev/null'
                         sh 'python3 scripts/generate_input.py "' + params.TARGET_NAMESPACE + '" "' + params.SELECTED_WORKLOADS + '"'
                     }
 
+                    // Menentukan konfigurasi Vault berdasarkan Region (jkt/sby)
+                    def region = selectedCluster.vaultRegion
+                    def vaultConf = rawConfig.vault ? rawConfig.vault[region] : rawConfig
+
+                    config = [
+                        ocp: env.SELECTED_OCP_URL,
+                        ocpcred: env.SELECTED_OCP_CRED,
+                        cluster_name: params.TARGET_CLUSTER,
+                        vaultaddr: vaultConf.vaultaddr,
+                        vaultcred: vaultConf.vaultcred
+                    ]
+
                     writeJSON(file: '.migration-work/config.json', json: config)
                     writeJSON(file: '.migration-work/input.json', json: readYaml(file: 'migrate.yaml'))
+                    
                     sh 'python3 scripts/migrate.py requests'
                     requests = readJSON(file: '.migration-work/requests.json', returnPojo: true)
                     
